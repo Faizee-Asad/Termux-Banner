@@ -1,0 +1,9 @@
+# local state
+*.tbbak
+*.log
+.DS_Store
+
+# python tooling
+__pycache__/
+*.pyc
+.venv/
