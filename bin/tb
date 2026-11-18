@@ -1,0 +1,238 @@
+#!/usr/bin/env bash
+# shellcheck shell=bash
+# ---------------------------------------------------------------------------
+#  Termux Banner Advanced :: tb
+#
+#  Command line front end.
+#
+#      tb                       show the configured banner
+#      tb --theme matrix        render with a different theme
+#      tb --text "BHAI4YOU"    render custom text
+#      tb --list-themes         list every theme
+#      tb --list-fonts          list every ASCII font
+#      tb --random              pick a random theme
+#      tb --loop                animated (Ctrl+C to stop)
+#      tb --doctor              check the installation
+# ---------------------------------------------------------------------------
+
+# ---- locate the project ----------------------------------------------------
+tb_self="${BASH_SOURCE[0]}"
+if command -v realpath >/dev/null 2>&1; then
+    tb_self="$(realpath "$tb_self" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+fi
+tb_here="$(cd "$(dirname "$tb_self")" 2>/dev/null && pwd)"
+
+TB_PROJECT_DIR=""
+for tb_cand in "${TB_BANNER_HOME:-}" "$tb_here/.." "$HOME/Termux-Banner" "$HOME/.termux-banner/project" "$HOME/termux-banner"; do
+    [ -z "$tb_cand" ] && continue
+    if [ -r "$tb_cand/lib/render.sh" ]; then
+        TB_PROJECT_DIR="$(cd "$tb_cand" 2>/dev/null && pwd)"
+        break
+    fi
+done
+if [ -z "$TB_PROJECT_DIR" ]; then
+    printf 'tb: cannot locate the Termux Banner project. Set TB_BANNER_HOME.\n' >&2
+    exit 1
+fi
+export TB_PROJECT_DIR
+
+# shellcheck source=../lib/core.sh
+. "$TB_PROJECT_DIR/lib/core.sh"
+# shellcheck source=../lib/render.sh
+. "$TB_PROJECT_DIR/lib/render.sh"
+# shellcheck source=../lib/fonts.sh
+. "$TB_PROJECT_DIR/lib/fonts.sh"
+# shellcheck source=../lib/fonts-data.sh
+. "$TB_PROJECT_DIR/lib/fonts-data.sh"
+# shellcheck source=../lib/sysinfo.sh
+. "$TB_PROJECT_DIR/lib/sysinfo.sh"
+# shellcheck source=../lib/config.sh
+. "$TB_PROJECT_DIR/lib/config.sh"
+# shellcheck source=../lib/loader.sh
+. "$TB_PROJECT_DIR/lib/loader.sh"
+
+tb_usage() {
+    cat <<EOF
+${TB_TITLE} v${TB_VERSION}
+
+USAGE
+   tb [options]
+
+OPTIONS
+   -t, --theme <name>     render with a specific theme
+   -x, --text <text>      render custom banner text
+   -f, --font <name>      ASCII font used for custom text
+   -m, --mascot <name>    mascot character (eyes, tux, builtin, ...)
+       --effect <style>   plain | shadow | chrome | outline
+       --direction <dir>  horizontal | vertical | diagonal
+       --no-info          hide the system info panel
+       --info             force the system info panel on
+   -r, --random           random theme
+   -l, --loop [frames]    animated mode (Ctrl+C to stop)
+       --list-themes      list all themes
+       --list-fonts       list all ASCII fonts
+       --list-art         list all bundled ASCII art
+       --config           print the current configuration
+       --set <key=value>  change a setting and save it
+       --doctor           diagnose the installation
+   -v, --version          show version
+   -h, --help             this help
+EOF
+}
+
+tb_doctor() {
+    printf '\n%s v%s\n\n' "$TB_TITLE" "$TB_VERSION"
+    printf '  %-22s %s\n' "Project dir" "$TB_PROJECT_DIR"
+    printf '  %-22s %s\n' "Config file" "$TB_CONFIG_FILE"
+    printf '  %-22s %s\n' "Colour depth" "$(tb_color_depth)"
+    printf '  %-22s %s\n' "Terminal width" "$(tb_term_width)"
+    printf '  %-22s %s\n' "toilet" "$(tb_has toilet && echo yes || echo no)"
+    printf '  %-22s %s\n' "figlet" "$(tb_has figlet && echo yes || echo no)"
+    printf '  %-22s %s\n' "cowsay" "$(tb_has cowsay && echo yes || echo no)"
+    printf '  %-22s %s\n' "lolcat" "$(tb_has lolcat && echo yes || echo no)"
+    printf '  %-22s %s\n' "Themes" "$(tb_theme_list | wc -l)"
+    printf '  %-22s %s\n' "Bundled art" "$(tb_art_files | wc -l)"
+    printf '  %-22s %s\n' "bashrc hook" "$(tb_rc_installed bash && echo installed || echo missing)"
+    printf '  %-22s %s\n' "zshrc hook" "$(tb_rc_installed zsh && echo installed || echo missing)"
+    printf '\n'
+}
+
+tb_list_themes() {
+    local t
+    printf '\n  %-14s %-22s %s\n' "NAME" "LABEL" "GRADIENT"
+    printf '  %s\n' "──────────────────────────────────────────────────────────────────────"
+    while IFS= read -r t; do
+        [ -z "$t" ] && continue
+        tb_theme_load "$t" 2>/dev/null || continue
+        printf '  %-14s %-22s %s\n' "$t" "$TB_TH_LABEL" "$TB_TH_GRADIENT"
+    done < <(tb_theme_list)
+    printf '\n'
+}
+
+tb_list_fonts() {
+    printf '\n'
+    tb_font_list | tr '\n' ' ' | fold -s -w 76 | sed 's/^/  /'
+    printf '\n\n'
+}
+
+tb_list_art() {
+    printf '\n'
+    tb_art_files | tr '\n' ' ' | fold -s -w 76 | sed 's/^/  /'
+    printf '\n\n'
+}
+
+# ---------------------------------------------------------------------------
+#  argument parsing
+# ---------------------------------------------------------------------------
+tb_theme_override=""
+tb_text_override=""
+tb_font_override=""
+tb_mascot_override=""
+tb_effect_override=""
+tb_dir_override=""
+tb_info_override=""
+tb_random=0
+tb_loop=0
+tb_loop_frames=30
+tb_action="render"
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -t|--theme)    tb_theme_override="$2"; shift 2 ;;
+        -x|--text)     tb_text_override="$2"; shift 2 ;;
+        -f|--font)     tb_font_override="$2"; shift 2 ;;
+        -m|--mascot)   tb_mascot_override="$2"; shift 2 ;;
+        --effect)      tb_effect_override="$2"; shift 2 ;;
+        --direction)   tb_dir_override="$2"; shift 2 ;;
+        --no-info)     tb_info_override="0"; shift ;;
+        --info)        tb_info_override="1"; shift ;;
+        -r|--random)   tb_random=1; shift ;;
+        -l|--loop)     tb_loop=1
+                       case "${2:-}" in
+                           ''|-*) ;;
+                           *) tb_loop_frames="$2"; shift ;;
+                       esac
+                       shift ;;
+        --list-themes) tb_action="themes"; shift ;;
+        --list-fonts)  tb_action="fonts"; shift ;;
+        --list-art)    tb_action="art"; shift ;;
+        --config)      tb_action="config"; shift ;;
+        --doctor)      tb_action="doctor"; shift ;;
+        --set)
+            tb_action="set"
+            tb_set_arg="$2"; shift 2 ;;
+        -v|--version)  printf '%s v%s\n' "$TB_TITLE" "$TB_VERSION"; exit 0 ;;
+        -h|--help)     tb_usage; exit 0 ;;
+        *)             printf 'tb: unknown option "%s"\n' "$1" >&2; tb_usage; exit 1 ;;
+    esac
+done
+
+tb_config_load
+
+case "$tb_action" in
+    themes) tb_list_themes; exit 0 ;;
+    fonts)  tb_list_fonts;  exit 0 ;;
+    art)    tb_list_art;    exit 0 ;;
+    doctor) tb_doctor;      exit 0 ;;
+    config)
+        printf '\n'
+        tb_config_load
+        printf '  TB_THEME=%s\n' "$TB_THEME"
+        printf '  TB_ART=%s\n' "$TB_ART"
+        printf '  TB_TEXT=%s\n' "$TB_TEXT"
+        printf '  TB_FONT=%s\n' "$TB_FONT"
+        printf '  TB_EFFECT=%s\n' "$TB_EFFECT"
+        printf '  TB_DIRECTION=%s\n' "$TB_DIRECTION"
+        printf '  TB_INFO=%s\n' "$TB_INFO"
+        printf '  TB_WIDGETS=%s\n' "$TB_WIDGETS"
+        printf '  TB_MASCOT=%s\n' "$TB_MASCOT"
+        printf '  TB_TITLE=%s\n' "$TB_TITLE"
+        printf '  TB_SUBTITLE=%s\n' "$TB_SUBTITLE"
+        printf '\n'
+        exit 0 ;;
+    set)
+        key="${tb_set_arg%%=*}"
+        val="${tb_set_arg#*=}"
+        if tb_config_set "$key" "$val"; then
+            tb_config_save && printf 'saved: %s=%s\n' "$key" "$val"
+        else
+            printf 'unknown setting: %s\n' "$key" >&2
+            exit 1
+        fi
+        exit 0 ;;
+esac
+
+# ---- apply overrides -------------------------------------------------------
+if [ -n "$tb_theme_override" ]; then
+    if ! tb_theme_load "$tb_theme_override" 2>/dev/null; then
+        printf 'tb: unknown theme "%s"\n' "$tb_theme_override" >&2
+        exit 1
+    fi
+    TB_THEME="$tb_theme_override"
+    TB_GRADIENT="$TB_TH_GRADIENT"
+    TB_DIRECTION="$TB_TH_DIRECTION"
+    TB_EFFECT="$TB_TH_EFFECT"
+fi
+[ -n "$tb_text_override" ] && { TB_ART="custom"; TB_TEXT="$tb_text_override"; }
+[ -n "$tb_font_override" ] && TB_FONT="$tb_font_override"
+[ -n "$tb_mascot_override" ] && TB_MASCOT="$tb_mascot_override"
+[ -n "$tb_effect_override" ] && TB_EFFECT="$tb_effect_override"
+[ -n "$tb_dir_override" ] && TB_DIRECTION="$tb_dir_override"
+[ -n "$tb_info_override" ] && TB_INFO="$tb_info_override"
+
+if [ "$tb_random" = "1" ]; then
+    mapfile -t tb_all_themes < <(tb_theme_list)
+    if [ ${#tb_all_themes[@]} -gt 0 ]; then
+        TB_THEME="${tb_all_themes[$((RANDOM % ${#tb_all_themes[@]}))]}"
+        tb_theme_load "$TB_THEME" 2>/dev/null
+        TB_GRADIENT="$TB_TH_GRADIENT"
+        TB_DIRECTION="$TB_TH_DIRECTION"
+        TB_EFFECT="$TB_TH_EFFECT"
+    fi
+fi
+
+if [ "$tb_loop" = "1" ]; then
+    tb_render_animated "$tb_loop_frames"
+else
+    tb_render_banner
+fi
